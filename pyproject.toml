@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aqa"
+version = "1.0.0"
+description = "Agent Quality Assurance — 基于队列协议的 Agent 通信与质量保障系统"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+kafka = ["aiokafka>=0.10.0"]
+test = ["pytest>=7.0", "pytest-asyncio>=0.21.0"]

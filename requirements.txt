@@ -1,0 +1,16 @@
+# AQA — Agent Quality Assurance
+# 核心依赖最小集, 按需安装队列后端
+
+# ── 核心 ──
+pyyaml>=6.0                     # 配置解析
+
+# ── 消息队列后端 (按需安装) ──
+# Redis Streams (默认)
+redis>=5.0                      # redis.asyncio
+
+# Kafka (可选, 切换 transport.backend=kafka 时安装)
+# aiokafka>=0.10.0
+
+# ── 测试 ──
+pytest>=7.0
+pytest-asyncio>=0.21.0

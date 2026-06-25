@@ -1,0 +1,70 @@
+# AQA 系统配置
+# 修改 transport.backend 即可切换队列后端
+
+app:
+  name: "Agent Quality Assurance"
+  version: "1.0.0"
+  debug: true
+
+# ── 消息队列后端 ──
+# backend: redis-streams (默认) | kafka
+transport:
+  backend: redis-streams
+  redis_url: "redis://127.0.0.1:6379"
+  kafka_servers: "127.0.0.1:9092"
+
+# ── Agent 配置 ──
+agents:
+  probe-1:
+    type: probe
+    group: aqa-probes
+    topics:
+      - "aqa:broadcast"
+      - "aqa:agent:probe"
+
+  judge-1:
+    type: judge
+    group: aqa-judges
+    topics:
+      - "aqa:agent:judge"
+
+  reporter-1:
+    type: reporter
+    group: aqa-reporters
+    topics:
+      - "aqa:agent:reporter"
+
+# ── 插件注册 ──
+# 插件通过 class_path 热加载, topic_bind 绑定到 Agent 处理阶段
+plugins:
+  validator:
+    class: "aqa.plugins.validator.ValidatorPlugin"
+    enabled: true
+    topic_bind:
+      - "probe"
+      - "judge"
+    config:
+      required_fields:
+        - task_id
+        - passed
+        - plugin_results
+
+  scorer:
+    class: "aqa.plugins.scorer.ScorerPlugin"
+    enabled: true
+    topic_bind:
+      - "judge"
+    config:
+      weights:
+        pass_rate: 0.5
+        field_completeness: 0.3
+        plugin_health: 0.2
+
+  # 第三方插件示例 (需安装后解开注释)
+  # my-custom-plugin:
+  #   class: "my_package.MyPlugin"
+  #   enabled: true
+  #   topic_bind:
+  #     - "probe"
+  #   config:
+  #     api_key: "***"

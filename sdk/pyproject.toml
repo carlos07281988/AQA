@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aqa-sdk"
+version = "1.0.0"
+description = "Agent Quality Assurance SDK — 外部 Agent 接入 AQA 系统的消息队列客户端"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/agent-quality-assurance/aqa-sdk"
