@@ -1,5 +1,5 @@
-# AQA 系统配置
-# 修改 transport.backend 即可切换队列后端
+# AQA 系统配置 — 完整版
+# 全部可配: Transport / Agent / 插件 / 安全 / 死信 / 监控
 
 app:
   name: "Agent Quality Assurance"
@@ -7,17 +7,25 @@ app:
   debug: true
 
 # ── 消息队列后端 ──
-# backend: redis-streams (默认) | kafka
+# backend: redis-streams | kafka | in-memory
 transport:
   backend: redis-streams
   redis_url: "redis://127.0.0.1:6379"
   kafka_servers: "127.0.0.1:9092"
+
+# ── 安全层 (可选) ──
+# 启用后 payload 在队列中加密传输, Agent 自动加解密
+security:
+  enabled: false    # 首次使用: pip install cryptography, 再设为 true
+  secret: ""        # 用 aqa-sdk generate-secret 生成, 所有 Agent 共享此密钥
 
 # ── Agent 配置 ──
 agents:
   probe-1:
     type: probe
     group: aqa-probes
+    max_retries: 3          # 消息重试次数, 超过后进 DLQ
+    heartbeat_interval: 30  # 心跳间隔 (秒)
     topics:
       - "aqa:broadcast"
       - "aqa:agent:probe"
@@ -25,17 +33,20 @@ agents:
   judge-1:
     type: judge
     group: aqa-judges
+    max_retries: 3
+    heartbeat_interval: 30
     topics:
       - "aqa:agent:judge"
 
   reporter-1:
     type: reporter
     group: aqa-reporters
+    max_retries: 2
+    heartbeat_interval: 30
     topics:
       - "aqa:agent:reporter"
 
 # ── 插件注册 ──
-# 插件通过 class_path 热加载, topic_bind 绑定到 Agent 处理阶段
 plugins:
   validator:
     class: "aqa.plugins.validator.ValidatorPlugin"
@@ -60,11 +71,16 @@ plugins:
         field_completeness: 0.3
         plugin_health: 0.2
 
-  # 第三方插件示例 (需安装后解开注释)
-  # my-custom-plugin:
-  #   class: "my_package.MyPlugin"
-  #   enabled: true
-  #   topic_bind:
-  #     - "probe"
-  #   config:
-  #     api_key: "***"
+  trace-collector:
+    class: "aqa.plugins.trace_collector.TraceCollector"
+    enabled: true
+    topic_bind:
+      - "probe"
+      - "judge"
+      - "reporter"
+    config:
+      report_interval: 60
+
+# ── Supervisor 配置 ──
+supervisor:
+  heartbeat_timeout: 90  # 超过此秒数未收到心跳即视为失联, 自动重启

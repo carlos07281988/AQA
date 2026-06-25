@@ -11,6 +11,9 @@ redis>=5.0                      # redis.asyncio
 # Kafka (可选, 切换 transport.backend=kafka 时安装)
 # aiokafka>=0.10.0
 
+# ── 安全 (可选, Payload 加密) ──
+# cryptography>=40.0              # 用于 Fernet AES 加密
+
 # ── 测试 ──
 pytest>=7.0
 pytest-asyncio>=0.21.0

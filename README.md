@@ -378,7 +378,7 @@ Agent 处理消息时:
 |---|---|---|
 | `InMemoryTransport` | ✅ 完整实现 (用于测试和 Demo) | 无 |
 | `RedisStreamsTransport` | ✅ 完整实现 | `redis>=5.0` |
-| `KafkaTransport` | ⬜ 接口已定义, 待实现 | `aiokafka>=0.10.0` |
+| `KafkaTransport` | ✅ 完整实现 (消费组/offset/自动提交) | `aiokafka>=0.10.0` |
 
 `Transport` 抽象接口只有 4 个方法:
 
@@ -432,15 +432,23 @@ cd AQA
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 
-# 2. 运行测试 (无外部依赖)
+# 2. 运行测试 (36 项, 无外部依赖)
 PYTHONPATH=. ./venv/bin/python -m pytest tests/ -v
 
 # 3. 运行 InMemory Demo (无需 Redis)
 PYTHONPATH=. ./venv/bin/python examples/demo.py
 
-# 4. 使用真实队列
-# 修改 config.yaml → transport.backend: redis-streams
-# 在 code 中使用 RedisStreamsTransport 替换 InMemoryTransport
+# 4. 使用 Engine 启动全部 Agent (配置驱动)
+PYTHONPATH=. ./venv/bin/python -c "
+import asyncio
+from aqa.core.engine import AQAEngine
+asyncio.run(AQAEngine('config.yaml').run())
+"
+
+# 5. 使用 Docker Compose (Redis + AQA)
+docker compose up -d
+# 查看日志
+docker compose logs -f
 ```
 
 ---
@@ -452,28 +460,76 @@ AQA/
 ├── aqa/                    # AQA 内核
 │   ├── core/
 │   │   ├── message.py      # 消息协议实现
-│   │   └── config.py       # 配置加载
+│   │   ├── config.py       # 配置加载
+│   │   ├── engine.py       # ★ 配置驱动运行时引擎
+│   │   ├── dlq.py          # ★ 死信队列模块
+│   │   └── security.py     # ★ Payload 加密 (Fernet AES)
 │   ├── transport/
 │   │   ├── base.py         # Transport ABC
 │   │   ├── redis_streams.py
-│   │   └── kafka_transport.py
+│   │   └── kafka_transport.py   # ★ 完整 Kafka 实现
 │   ├── plugin/
 │   │   ├── base.py         # Plugin ABC
 │   │   └── registry.py     # 插件注册中心
 │   ├── agent/
-│   │   ├── base.py         # Agent 基类 (消息循环)
+│   │   ├── base.py         # Agent 基类 (v2: 心跳/重试/DLQ/优雅关闭)
+│   │   ├── supervisor.py   # ★ Agent 生命周期总管
 │   │   ├── probe.py        # 检测 Agent
 │   │   ├── judge.py        # 评判 Agent
 │   │   └── reporter.py     # 报告 Agent
-│   └── plugins/            # 内置插件
+│   └── plugins/
+│       └── trace_collector.py  # ★ 链路追踪插件
 ├── sdk/                    # 外部 Agent SDK
 │   ├── aqa_sdk/            #   Python SDK (独立包)
 │   ├── README.md           #   协议文档 + 多语言示例
 │   └── examples/
 │       ├── go_agent.go     #   Go 外部 Agent 示例
 │       └── js_agent.mjs    #   JS 外部 Agent 示例
-├── config.yaml             # 主配置
+├── Dockerfile              # ★ Docker 构建
+├── docker-compose.yml      # ★ Docker Compose (Redis + AQA)
+├── config.yaml             # 主配置 (完整版)
 ├── tests/
 └── examples/
     └── demo.py             # InMemory Demo
 ```
+
+---
+
+<br>
+
+## 十二、项目演进
+
+### 2026-06-25 — v2 增强 (7 项改进)
+
+| # | 模块 | 说明 |
+|---|---|---|
+| **1** | **🏭 Engine** `core/engine.py` | 配置驱动运行时, `AQAEngine("config.yaml").run()` 自动创建 Transport/Agent/插件/监控 |
+| **2** | **🔄 生命周期管理** `agent/supervisor.py` | 心跳广播 + 双通道 + 故障自动重启 + SIGTERM 优雅关闭 (drain→cancel→disconnect) |
+| **3** | **⚠️ 死信队列 DLQ** `core/dlq.py` | 消息失败自动构建 DeadLetterRecord, 含重试计数/错误原因/时间戳 |
+| **4** | **📊 TraceCollector 插件** `plugins/trace_collector.py` | 自动记录每条消息的处理耗时 + trace_id + 来源 |
+| **5** | **🔐 Payload 加密** `core/security.py` | PBKDF2 密钥派生 + Fernet AES 加密, 自动在 publish 前加密/subscribe 后解密 |
+| **6** | **📦 Kafka Transport** `transport/kafka_transport.py` | 完整实现 (aiokafka), 消费组/offset/自动提交 |
+| **7** | **🐳 Docker** `Dockerfile` + `docker-compose.yml` | Redis + AQA 一键启动 |
+
+**配置更新**: `config.yaml` 新增 `agents` / `plugins` / `security` / `dlq` 段。
+
+```yaml
+agents:
+  probe-1:    { type: probe, subscribe: ["aqa:broadcast", "aqa:agent:probe"] }
+  judge-1:    { type: judge, subscribe: ["aqa:broadcast", "aqa:agent:judge"] }
+  reporter-1: { type: reporter, subscribe: ["aqa:broadcast", "aqa:agent:reporter"] }
+
+plugins:
+  trace_collector: {}
+  # validator: { threshold: 0.5 }
+
+security:
+  enabled: false
+  # secret: "change-me"   # 启用后加密所有 payload
+
+dlq:
+  topic: "aqa:dlq"
+  retention_hours: 168
+```
+
+**验证**: 36 项测试 (23 核心 + 13 SDK) + Demo 全部通过。
