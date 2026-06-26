@@ -12,4 +12,4 @@ COPY config.yaml ./config.yaml
 
 ENV PYTHONPATH=/app
 
-CMD ["python", "-m", "aqa.core.engine"]
+ENTRYPOINT ["python", "-m", "aqa"]

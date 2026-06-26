@@ -7,6 +7,7 @@ AQA 消息协议 — 信封、主题、消息类型
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -14,10 +15,16 @@ from enum import Enum
 from typing import Any
 
 
+logger = logging.getLogger("aqa.core.message")
+
+
 # ── 消息类型 ──
 
 class MessageType(str, Enum):
     """AQA 标准消息类型 — 严格匹配 PROTOCOL.md §2"""
+
+    # 未知类型 (来自外部或不兼容版本)
+    UNKNOWN = "UNKNOWN"
 
     # 生命周期
     HEARTBEAT = "HEARTBEAT"
@@ -136,8 +143,8 @@ class Message:
         """从 JSON dict 反序列化"""
         raw_type = data.get("type", "")
 
-        # 类型解析: 允许大小写不敏感 fallback
-        msg_type = MessageType.PLUGIN_EVENT
+        # 类型解析: 未知类型 → UNKNOWN (不静默丢弃, 供 Agent 发 ERROR)
+        msg_type = MessageType.UNKNOWN
         if isinstance(raw_type, str):
             try:
                 msg_type = MessageType(raw_type)
@@ -146,7 +153,8 @@ class Message:
                 try:
                     msg_type = MessageType(raw_type.upper())
                 except ValueError:
-                    msg_type = MessageType.PLUGIN_EVENT
+                    logger.warning("未知消息类型 '%s', 标记为 UNKNOWN", raw_type)
+                    msg_type = MessageType.UNKNOWN
 
         return cls(
             type=msg_type,
@@ -228,8 +236,10 @@ def validate_message(data: dict[str, Any]) -> list[str]:
 
     # version 检查
     version = data.get("version", "")
-    if version and version != "1.0":
-        errors.append(f"协议版本不匹配: 期望 1.0, 收到 {version}")
+    if version:
+        major = version.split(".")[0] if "." in version else version
+        if not major.isdigit() or int(major) != 1:
+            errors.append(f"协议版本不匹配: 期望 1.x, 收到 {version}")
 
     # target 和 correlation_id 必须是字符串 (允许空)
     for field in ("target", "correlation_id"):

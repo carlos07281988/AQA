@@ -22,6 +22,7 @@ from aqa.core.message import (
     Message,
     MessageType,
     Topic,
+    error_message,
     heartbeat,
     validate_message,
 )
@@ -62,8 +63,10 @@ class Agent(ABC):
         self._last_group: str = ""
         self._last_msg_id: str | None = None
         # 幂等去重 — 已处理消息 ID 缓存 (最多保留 10000 条)
-        self._processed_ids: set[str] = set()
+        self._processed_ids: dict[str, float] = {}
         self._idempotency_max_size: int = 10000
+        self._idempotency_ttl: int = 300  # 5 分钟后自动过期
+        self._last_idempotency_cleanup: float = 0.0
 
     @property
     @abstractmethod
@@ -183,16 +186,16 @@ class Agent(ABC):
 
             # 幂等去重 — 重复 message_id 直接跳过 (PROTOCOL.md §8.5)
             msg_id = message.message_id
-            if msg_id in self._processed_ids:
+            if msg_id in self._processed_ids and self._processed_ids[msg_id] > _time.time() - self._idempotency_ttl:
                 logger.debug(
                     "[%s] 跳过重复消息 %s (trace=%s)",
                     self.agent_id, msg_id, message.trace_id,
                 )
                 continue
-            self._processed_ids.add(msg_id)
+            self._processed_ids[msg_id] = _time.time()
             # 限制缓存大小
             if len(self._processed_ids) > self._idempotency_max_size:
-                self._processed_ids = set(list(self._processed_ids)[-5000:])
+                self._evict_stale_ids()
 
             # 校验消息格式 (PROTOCOL.md §1)
             raw = message.to_dict()
@@ -203,6 +206,27 @@ class Agent(ABC):
                     self.agent_id, message.trace_id, "; ".join(validation_errors),
                 )
                 # 校验失败 → ack 丢弃, 不重试
+                continue
+
+            # 未知类型 → 发 ERROR 消息并丢弃 (PROTOCOL.md §5.1)
+            if message.type == MessageType.UNKNOWN:
+                logger.warning(
+                    "[%s] 收到未知类型消息 trace_id=%s, 发 ERROR",
+                    self.agent_id, message.trace_id,
+                )
+                err = error_message(
+                    source=self.agent_id,
+                    code="UNKNOWN_TYPE",
+                    message=f"不识别消息类型",
+                    trace_id=message.trace_id,
+                    original_message_id=message.message_id,
+                )
+                if message.source:
+                    err.target = message.source
+                await self._transport.publish(
+                    Topic.agent_inbox(err.target) if err.target else Topic.BROADCAST,
+                    err,
+                )
                 continue
 
             # 解密 payload
@@ -239,7 +263,9 @@ class Agent(ABC):
                     e,
                 )
                 self._current_message = None
-                await self._handle_failure(message, str(e), str(topic))
+                should_ack = await self._handle_failure(message, str(e), str(topic))
+                if should_ack:
+                    self._last_msg_id = None  # 已在 _handle_failure 中 ACK，防止重复
             if self._last_msg_id:
                 await self._transport.ack(topic, self._last_msg_id, self._last_group)
 
@@ -252,7 +278,28 @@ class Agent(ABC):
         }
         return topic_map.get(message.topic, Topic.agent_inbox(message.source))
 
+    def _evict_stale_ids(self) -> None:
+        """清理过期的幂等去重记录"""
+        now = _time.time()
+        cutoff = now - self._idempotency_ttl
+        stale = [mid for mid, ts in self._processed_ids.items() if ts < cutoff]
+        for mid in stale:
+            del self._processed_ids[mid]
+        # 如果 TTL 清理后仍然超过上限, 按时间排序删除最旧的
+        if len(self._processed_ids) > self._idempotency_max_size:
+            sorted_ids = sorted(self._processed_ids.items(), key=lambda x: x[1])
+            for mid, _ in sorted_ids[:len(sorted_ids) - self._idempotency_max_size // 2]:
+                del self._processed_ids[mid]
+        logger.debug("[%s] 幂等缓存清理: 移除 %d 条旧记录", self.agent_id, len(stale))
+        self._last_idempotency_cleanup = _time.time()
+
     async def _handle_failure(self, message: Message, error: str, topic: str):
+        '''处理消息处理失败。
+
+        Returns:
+            True  → 消息已转入 DLQ，调用方无需再次 ACK
+            False → 消息将重试，调用方不应 ACK (留在 pending 队列)
+        '''
         msg_key = self._msg_key(message)
         retry_count = self._retry_counts.get(msg_key, 0) + 1
         self._retry_counts[msg_key] = retry_count
@@ -283,6 +330,7 @@ class Agent(ABC):
             self._retry_counts.pop(msg_key, None)
             if self._last_msg_id:
                 await self._transport.ack(topic, self._last_msg_id, self._last_group)
+            return True
         else:
             logger.info(
                 "[%s] 消息 %s 重试 %d/%d",
@@ -291,6 +339,7 @@ class Agent(ABC):
                 retry_count,
                 self._max_retries,
             )
+            return False
 
     @staticmethod
     def _msg_key(message: Message) -> str:

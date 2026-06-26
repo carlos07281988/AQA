@@ -42,7 +42,11 @@ class PayloadCipher:
         self._enabled = False
         self._fernet = None
         if secret and CRYPTO_AVAILABLE:
-            salt = secret.encode()[:16].ljust(16, b"\0")
+            # 使用 HMAC 风格派生 salt，而非直接截取 secret 前 16 字节
+            digest = hashes.Hash(hashes.SHA256())
+            digest.update(b"aqa-pbkdf2-salt-")
+            digest.update(secret.encode())
+            salt = digest.finalize()[:16]
             key = _derive_key(secret, salt)
             self._fernet = Fernet(key)
             self._enabled = True

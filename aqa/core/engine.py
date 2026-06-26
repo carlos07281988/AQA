@@ -255,3 +255,48 @@ class AQAEngine:
 
             self._supervisor.register(agent)
             logger.info("[engine] Agent 已创建: %s (%s)", agent_id, agent_type)
+
+
+async def main():
+    """CLI 入口：从 config.yaml 启动 AQA 引擎"""
+    import argparse
+    import asyncio
+
+    parser = argparse.ArgumentParser(description="AQA — Agent Quality Assurance Engine")
+    parser.add_argument(
+        "-c", "--config",
+        default="config.yaml",
+        help="配置文件路径 (默认: config.yaml)"
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["redis-streams", "kafka", "in-memory"],
+        help="覆盖 transport.backend"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="覆盖 app.debug 为 true"
+    )
+    args = parser.parse_args()
+
+    engine = AQAEngine(config_path=args.config)
+
+    if args.backend:
+        engine._config._data["transport"]["backend"] = args.backend
+    if args.debug:
+        engine._config._data["app"]["debug"] = True
+
+    try:
+        await engine.start()
+        logger.info("AQA Engine 运行中，按 Ctrl+C 停止")
+        await engine.wait_until_shutdown()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await engine.stop()
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())

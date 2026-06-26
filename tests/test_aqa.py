@@ -4,17 +4,21 @@ AQA 测试 — 核心协议 + Transport + 插件 + Agent + DLQ + 安全 + 链路
 from __future__ import annotations
 
 import asyncio
+import time
 import pytest
 
 from aqa.core.message import (
     Message,
     MessageType,
     Topic,
+    error_message,
+    validate_message,
     task_dispatch,
     task_result,
     judge_verdict,
     heartbeat,
 )
+from aqa.core.dlq import DLQ_TOPIC
 from aqa.plugin.base import Plugin
 from aqa.plugin.registry import registry
 
@@ -199,6 +203,18 @@ class _TestTransport(Transport):
 from aqa.agent.probe import ProbeAgent
 from aqa.agent.judge import JudgeAgent
 from aqa.agent.reporter import ReporterAgent
+from aqa.agent.base import Agent
+
+
+class _FailingProbeAgent(Agent):
+    """测试用 — 总是在 handle_message 抛出异常"""
+
+    @property
+    def agent_type(self) -> str:
+        return "probe"
+
+    async def handle_message(self, message: Message) -> list[Message] | None:
+        raise RuntimeError("simulated failure for test")
 
 
 class TestAgentIntegration:
@@ -413,6 +429,93 @@ class TestTraceCollector:
         results = await registry.execute_all("probe", ctx)
         assert len(results) == 1
         assert results[0]["error"] is None
+
+
+class TestRetryAndDLQ:
+    """重试与死信队列测试"""
+
+    @pytest.mark.asyncio
+    async def test_retries_exhausted_forwards_to_dlq(self):
+        transport = _TestTransport()
+        agent = _FailingProbeAgent(
+            "dlq-test", transport, max_retries=1, heartbeat_interval=999,
+        )
+        agent.subscribe_to(Topic.AGENT_PROBE)
+        await agent.start()
+        await asyncio.sleep(0.05)
+
+        msg = task_dispatch("tester", {"task_id": "dlq-test-001"})
+        await transport.publish(Topic.AGENT_PROBE, msg)
+
+        # 等待消费 + 重试耗尽 + DLQ 转发
+        await asyncio.sleep(1.0)
+        await agent.stop()
+
+        # 验证 DLQ 消息被发布
+        dlq_published = [
+            (t, m) for t, m in transport.published
+            if t == DLQ_TOPIC or m.payload.get("code") == "PROCESSING_ERROR"
+        ]
+        assert len(dlq_published) >= 1, "应至少有一条 DLQ 消息"
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_generates_error(self):
+        transport = _TestTransport()
+        probe = ProbeAgent("ut-test", transport, max_retries=1, heartbeat_interval=999)
+        probe.subscribe_to(Topic.AGENT_PROBE)
+        await probe.start()
+        await asyncio.sleep(0.05)
+
+        # 构造一条 UNKNOWN 类型的消息 (通过 from_dict 传入非法 type)
+        msg = Message(type=MessageType.UNKNOWN, source="evil-sender", payload={"x": 1})
+        msg.topic = Topic.AGENT_PROBE
+        await transport.publish(Topic.AGENT_PROBE, msg)
+        await asyncio.sleep(0.5)
+        await probe.stop()
+
+        # 验证 ERROR(UNKNOWN_TYPE) 被发布
+        error_msgs = [
+            m for t, m in transport.published
+            if m.type == MessageType.ERROR and m.payload.get("code") == "UNKNOWN_TYPE"
+        ]
+        assert len(error_msgs) >= 1
+        assert "UNKNOWN_TYPE" in error_msgs[0].payload.get("code", "")
+
+    @pytest.mark.asyncio
+    async def test_normal_message_does_not_trigger_dlq(self):
+        transport = _TestTransport()
+        probe = ProbeAgent("ok-test", transport, max_retries=3, heartbeat_interval=999)
+        probe.subscribe_to(Topic.AGENT_PROBE)
+        await probe.start()
+        await asyncio.sleep(0.05)
+
+        msg = task_dispatch("tester", {"task_id": "ok-001"})
+        await transport.publish(Topic.AGENT_PROBE, msg)
+        await asyncio.sleep(0.5)
+        await probe.stop()
+
+        # 验证没有 DLQ 消息
+        dlq_published = [m for t, m in transport.published if t == DLQ_TOPIC]
+        assert len(dlq_published) == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_count_resets_on_success(self):
+        """成功处理后重试计数应被清除"""
+        transport = _TestTransport()
+        probe = ProbeAgent("reset-test", transport, max_retries=3, heartbeat_interval=999)
+        probe.subscribe_to(Topic.AGENT_PROBE)
+        await probe.start()
+        await asyncio.sleep(0.05)
+
+        # 发送一个可以正常处理的消息
+        msg = task_dispatch("tester", {"task_id": "reset-001"})
+        await transport.publish(Topic.AGENT_PROBE, msg)
+        await asyncio.sleep(0.5)
+        await probe.stop()
+
+        # 验证重试计数器中已无此消息
+        msg_key = f"tester:{msg.trace_id}:{msg.type}"
+        assert msg_key not in probe._retry_counts
 
 
 class TestSupervisor:

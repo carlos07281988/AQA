@@ -19,26 +19,12 @@ class AQAConfig:
             "debug": False,
         },
         "transport": {
-            "backend": "redis-streams",  # redis-streams | kafka
+            "backend": "redis-streams",
             "redis_url": "redis://127.0.0.1:6379/0",
             "kafka_servers": "127.0.0.1:9092",
         },
         "agents": {
-            "probe": {
-                "enabled": True,
-                "count": 1,
-                "id_prefix": "probe",
-            },
-            "judge": {
-                "enabled": True,
-                "count": 1,
-                "id_prefix": "judge",
-            },
-            "reporter": {
-                "enabled": True,
-                "count": 1,
-                "id_prefix": "reporter",
-            },
+            # 无默认 Agent — 由 config.yaml 中 agents 段定义
         },
         "plugins": {},  # {name: {enabled: true, config: {...}}}
     }

@@ -17,6 +17,8 @@ from typing import Any, Optional
 class MessageType(str, Enum):
     """消息类型 — AQA 协议的核心语义 (PROTOCOL.md §2)"""
 
+    UNKNOWN = "UNKNOWN"
+
     # 生命周期
     HEARTBEAT = "HEARTBEAT"
     REGISTER = "REGISTER"
@@ -120,14 +122,16 @@ class AQAMessage:
 
     @staticmethod
     def _resolve_type(raw: str) -> MessageType:
-        """尝试解析类型, 失败时返回 PLUGIN_EVENT"""
+        """尝试解析类型, 失败时返回 UNKNOWN"""
         try:
             return MessageType(raw)
         except ValueError:
             try:
                 return MessageType(raw.upper())
             except ValueError:
-                return MessageType.PLUGIN_EVENT
+                import logging
+                logging.getLogger("aqa_sdk.message").warning("未知消息类型 '%s', 标记为 UNKNOWN", raw)
+                return MessageType.UNKNOWN
 
     # ── 序列化 ──
 
@@ -154,7 +158,7 @@ class AQAMessage:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AQAMessage":
         return cls(
-            type=MessageType(data["type"]) if "type" in data else MessageType.PLUGIN_EVENT,
+            type=data.get("type", ""),
             source=data.get("source", ""),
             payload=data.get("payload", {}),
             message_id=data.get("message_id"),
@@ -273,8 +277,10 @@ def validate_message(data: dict[str, Any]) -> list[str]:
 
     # version 检查
     version = data.get("version", "")
-    if version and version != "1.0":
-        errors.append(f"协议版本不匹配: 期望 1.0, 收到 {version}")
+    if version:
+        major = version.split(".")[0] if "." in version else version
+        if not major.isdigit() or int(major) != 1:
+            errors.append(f"协议版本不匹配: 期望 1.x, 收到 {version}")
 
     # target 和 correlation_id 必须是字符串 (允许空)
     for field in ("target", "correlation_id"):
